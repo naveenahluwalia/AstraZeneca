@@ -1,0 +1,186 @@
+---
+title: "FDA data analysis for AstraZeneca interview by Naveen Ahluwalia"
+output:
+  word_document: default
+  html_notebook: default
+---
+
+
+```{r}
+library("devtools")
+devtools::install_github("ropenhealth/openfda")
+
+```
+
+
+```{r}
+library("openfda")
+```
+```{r}
+library(rjson)
+json_file <- fda_query("/animalandveterinary/event.json") %>%
+  fda_filter("reaction.veddra_term_name", "emesis")  %>%
+  fda_limit(100) %>%
+  fda_search() %>%
+  fda_exec()
+
+#View(json_file)
+#https://api.fda.gov/animalandveterinary/event.json?search=reaction.veddra_term_name:"emesis"+AND+animal.species:"Cat"&limit=100
+
+```
+
+From the FDA website, I have downloaded 100 observations related to animal and veterinary event, all of which had a reaction of "emesis"
+
+
+```{r}
+library(jsonlite)
+
+fdadata <- flatten(json_file)
+#View(fdadata)
+
+```
+`
+Since the files are downloaded as nested arrays, the flatten code above is needed to work with individual features.
+
+```{r}
+library(lubridate)
+library(tidyverse)
+library(dplyr)
+
+
+fdadata$treated_for_ae<-as.factor(fdadata$treated_for_ae)
+fdadata= fdadata[!(is.na(fdadata$treated_for_ae) | fdadata$treated_for_ae==""),]
+
+fdadata= fdadata[!(is.na(fdadata$onset_date) | fdadata$onset_date==""), ]
+fdadata$onset_date <- substr(fdadata$onset_date, 5, 6)
+fdadata$onset_date<-as.factor(fdadata$onset_date)
+
+fdadata$health_assessment_prior_to_exposure.condition<-as.factor(fdadata$health_assessment_prior_to_exposure.condition)
+
+fdadata$animal.gender<-as.factor(fdadata$animal.gender)
+fdadata= fdadata[!(is.na(fdadata$animal.gender) | fdadata$animal.gender==""), ]
+
+fdadata$animal.species<-as.factor(fdadata$animal.species)
+
+fdadata$animal.reproductive_status<-as.factor((fdadata$animal.reproductive_status))
+fdadata= fdadata[!(is.na(fdadata$animal.reproductive_status) | fdadata$animal.reproductive_status==""), ]
+
+fdadata$animal.weight.min<-as.numeric(fdadata$animal.weight.min)
+fdadata$animal.weight.min<-round(fdadata$animal.weight.min)
+fdadata=mutate(fdadata, animalweight = ifelse(fdadata$animal.weight.min %in% 0:5, 5, ifelse(fdadata$animal.weight.min %in% 5:10,10, ifelse(fdadata$animal.weight.min %in% 10:15, 15, ifelse(fdadata$animal.weight.min %in% 15:20, 20, ifelse(fdadata$animal.weight.min %in% 20:25, 25, ifelse(fdadata$animal.weight.min %in% 25:30, 30,ifelse(fdadata$animal.weight.min %in% 30:35, 35, 40))))))))
+               
+
+#fdadata=mutate(fdadata,animalweight=ifelse(fdadata$animal.weight.min %in% #0:20,20,40))
+
+fdadata1<-fdadata[,c(1,10,25,26,27,29,38)]
+
+fdadata2<-fdadata[,c(1,10,25,26,27,29,38)]
+                                                  
+```
+
+Various data preprocessing steps are done above to remove "NA" observations, to format dates, to convert ranges into numbers, and change the format to "factors" which is necessary to run some machine learning algorithms.
+
+```{r}
+fdadata1=mutate(fdadata1, treated_for_ae = ifelse(treated_for_ae %in% "true", "1", "0"))
+fdadata1=mutate(fdadata1, health_assessment_prior_to_exposure.condition = ifelse(health_assessment_prior_to_exposure.condition %in% "Good", "1", "0"))
+fdadata1=mutate(fdadata1, animal.gender = ifelse(animal.gender %in% "Male", "1", "0"))
+fdadata1=mutate(fdadata1, animal.species = ifelse(animal.species %in% "Dog", "1", "0"))
+fdadata1=mutate(fdadata1, animal.reproductive_status = ifelse(animal.reproductive_status %in% "Neutered", "1", ifelse(animal.reproductive_status %in% "Intact", "2","0")))
+
+
+fdadata1$treated_for_ae<-as.numeric(fdadata1$treated_for_ae)
+fdadata1$onset_date<-as.numeric(fdadata1$onset_date)
+fdadata1$health_assessment_prior_to_exposure.condition<-as.numeric(fdadata1$health_assessment_prior_to_exposure.condition)
+fdadata1$animal.gender<-as.numeric(fdadata1$animal.gender)
+fdadata1$animal.species<-as.numeric(fdadata1$animal.species)
+fdadata1$animal.reproductive_status<-as.numeric(fdadata1$animal.reproductive_status)
+fdadata1$animalweight<-as.numeric(fdadata1$animalweight)
+```
+
+Some more data preprocessing to change catergorical data to numerical data which makes it easier to run correlation matrix and PCA.
+
+```{r}
+View(fdadata)
+view(fdadata1)
+```
+
+```{r}
+library(corrplot)
+#devtools::install_github("vsimko/corrplot")
+x<-cor(fdadata1)
+#corrplot(x, method="circle", mar=c(1,1,1,1))
+corrplot(x, type = "upper", tl.pos = "td",
+         method = "circle", tl.cex = 0.5, tl.col = 'black',
+         order = "hclust", diag = FALSE)
+```
+
+
+
+Figure above shows correlation between various features. As we can see onset-date is very positively correlated to animal-reproductive_status and similary treated_for_ae is negatively correlated to animal gender. 
+
+
+
+```{r}
+Cov_data <- cov(fdadata1)
+Eigen_data <- eigen(Cov_data)
+PCA_data <- princomp(fdadata1 ,cor="False")
+Eigen_data$values
+PCA_data$sdev^2
+PCA_data$loadings[,1:7]
+Eigen_data$vectors
+summary(PCA_data)
+biplot (PCA_data)
+screeplot(PCA_data, type="lines")
+
+```
+
+PCA is a dimension reduction technique that not only provides better analyses by reducing the features but also enables a much better visual representation of the data. As we can see in the PCA results above, out of the 7 features, just 2 are able to account for nearly 100% of the variance in the data.
+
+```{r}
+library(dplyr)
+fdadata1 %>% filter(animal.species=="1") %>% group_by(animal.gender) %>% summarise(animalweight=mean(animalweight))
+
+```
+
+The code above can run some stratification similarly to a pivot chart in excel.
+
+```{r}
+set.seed(8)
+train <- sample(1:nrow(fdadata2), nrow(fdadata2)/2)
+test <- fdadata2[-train,] 
+x_test <- test[,-c(1)]
+
+treated_for_ae.test <- fdadata2$treated_for_ae[-train]
+```
+
+```{r}
+library(randomForest)
+set.seed(8)
+bag.fda <- randomForest(treated_for_ae ~ .,
+data = fdadata2,
+subset = train,
+mtry=6,
+importance = TRUE)
+
+print(bag.fda)
+
+bag.pred <- predict(bag.fda, newdata = test, type="class")
+
+print(mean(bag.pred!=treated_for_ae.test))
+```
+
+Finally I have performed a random forest analysis. Because the FDA data is essentially a single class dataset i.e. all the observations are for animal that did have emesis, I ran RF on a level below the dataset where the dependent variable was "treated for ae". The ideas was to see if the features that caused the animal to be treated for ae could perhaps have also been the determinant features in causing emesis.
+
+```{r}
+importance(bag.fda)
+varImpPlot(bag.fda)
+
+barplot(sort(importance(bag.fda)[,1], decreasing = TRUE),
+xlab = "Relative Importance",
+horiz = TRUE,
+col = "red",
+las=1 #The las argument will allow rotation of 90 degrees for labels
+)
+```
+
+Finally I ran a relative importance plot that yield the features most contributing toward the animal being treated for ae.
